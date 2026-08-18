@@ -97,7 +97,8 @@ def send(text, reply_markup=None):
 
 def confirm(update_id):
     """Подтвердить обработку апдейта (снять из очереди)."""
-    http(TG + "getUpdates?offset=" + str(update_id + 1))
+    http(TG + "getUpdates?offset=%d&timeout=0&allowed_updates=%s"
+         % (update_id + 1, urllib.parse.quote('["message","callback_query"]')))
 
 def answer_cb(cb_id, text="Принято ✅"):
     tg("answerCallbackQuery", {"callback_query_id": cb_id, "text": text})
@@ -379,9 +380,14 @@ def parse_payload(src):
     return d
 
 def handle_callback(cb):
-    data = cb["data"]; msg_id = cb["message"]["message_id"]
-    src = cb["message"].get("text", "")
-    answer_cb(cb["id"])
+    data = cb.get("data", "")
+    message = cb.get("message") or {}
+    msg_id = message.get("message_id")
+    src = message.get("text", "") or ""
+    try:
+        answer_cb(cb["id"])
+    except Exception:
+        pass
     if data == "cancel":
         edit(msg_id, "✖️ Отменено")
         confirm(cb["update_id"]); return
@@ -432,14 +438,21 @@ def handle_reply(msg):
 # ------------------------------------------------------------------ main loop
 def main():
     load_users()
-    res = http(TG + "getUpdates")
+    res = http(TG + "getUpdates?timeout=0&allowed_updates=%s"
+               % urllib.parse.quote('["message","callback_query"]'))
     ups = res.get("result", [])
+    print("BOT updates=%d types=%s" % (len(ups),
+          [ ("cb" if "callback_query" in u else "msg") for u in ups ]), file=sys.stderr)
     ups.sort(key=lambda x: x["update_id"])
     for up in ups:
         try:
             if "callback_query" in up:
                 cb = up["callback_query"]; cb["update_id"] = up["update_id"]
-                if cb["from"]["id"] != CHAT_ID:
+                cb_chat = (cb.get("message", {}) or {}).get("chat", {}).get("id")
+                print("BOT callback update=%s data=%s from=%s chat=%s" %
+                      (up["update_id"], cb.get("data"),
+                       (cb.get("from") or {}).get("id"), cb_chat), file=sys.stderr)
+                if cb_chat is not None and cb_chat != CHAT_ID:
                     confirm(up["update_id"]); continue
                 handle_callback(cb)
                 continue
