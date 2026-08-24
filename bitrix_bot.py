@@ -18,7 +18,7 @@ import os, re, sys, json, time, base64, datetime, urllib.request, urllib.parse
 
 BITRIX = os.environ["BITRIX_WEBHOOK"].rstrip("/") + "/"
 TG_TOKEN = os.environ["TG_TOKEN"]
-CHAT_ID = int(os.environ.get("CHAT_ID", "254803890"))
+CHAT_ID = int(os.environ["CHAT_ID"])
 TG = "https://api.telegram.org/bot" + TG_TOKEN + "/"
 
 OWNER = 58            # Павел
