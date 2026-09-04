@@ -317,7 +317,55 @@ def dedup(title, resp):
         pass
     return None
 
-def create_task(title, resp, who, deadline_iso, deadline_h, desc=""):
+# ------------------------------------------------------ вложения (Telegram → Диск Битрикса)
+def extract_file(msg):
+    """Вернёт (file_id, имя) для вложения в сообщении, иначе None."""
+    d = msg.get("document")
+    if d:
+        return (d["file_id"], d.get("file_name") or ("document_" + str(d.get("file_unique_id", ""))))
+    ph = msg.get("photo")
+    if ph:
+        big = ph[-1]
+        return (big["file_id"], "photo_" + str(big.get("file_unique_id", "")) + ".jpg")
+    v = msg.get("video")
+    if v:
+        return (v["file_id"], v.get("file_name") or ("video_" + str(v.get("file_unique_id", "")) + ".mp4"))
+    a = msg.get("audio")
+    if a:
+        return (a["file_id"], a.get("file_name") or ("audio_" + str(a.get("file_unique_id", "")) + ".mp3"))
+    vo = msg.get("voice")
+    if vo:
+        return (vo["file_id"], "voice_" + str(vo.get("file_unique_id", "")) + ".ogg")
+    return None
+
+def tg_file_bytes(file_id):
+    r = http(TG + "getFile?file_id=" + urllib.parse.quote(file_id))
+    path = r["result"]["file_path"]
+    url = "https://api.telegram.org/file/bot" + TG_TOKEN + "/" + path
+    with urllib.request.urlopen(url, timeout=180) as resp:
+        return resp.read()
+
+def upload_attachment(file_id, filename):
+    """Скачивает файл из Telegram, кладёт на Диск, возвращает 'n<id>' для UF_TASK_WEBDAV_FILES."""
+    content = tg_file_bytes(file_id)
+    b64 = base64.b64encode(content).decode()
+    res = bx("disk.folder.uploadfile", {
+        "id": DISK_FOLDER,
+        "data": {"NAME": filename},
+        "fileContent": [filename, b64],
+        "generateUniqueName": True,
+    })
+    fid = (res.get("result") or {}).get("ID")
+    return ("n" + str(fid)) if fid else None
+
+def payload_files(pay):
+    v = (pay or {}).get("FILES")
+    if not v or v == "-":
+        return None
+    lst = [x.strip() for x in v.split(",") if x.strip()]
+    return lst or None
+
+def create_task(title, resp, who, deadline_iso, deadline_h, desc="", files=None):
     dup = dedup(title, resp)
     if dup:
         tid = dup
@@ -325,10 +373,13 @@ def create_task(title, resp, who, deadline_iso, deadline_h, desc=""):
         fields = {"TITLE": title, "RESPONSIBLE_ID": resp, "CREATED_BY": OWNER}
         if desc: fields["DESCRIPTION"] = desc
         if deadline_iso: fields["DEADLINE"] = deadline_iso
+        if files: fields["UF_TASK_WEBDAV_FILES"] = files
         res = bx("tasks.task.add", {"fields": fields})
         tid = res["result"]["task"]["id"]
-    send("✅ Задача создана: %s\nИсполнитель: %s\nДедлайн: %s\n%s"
-         % (title, who, deadline_h or "—", task_link(tid)))
+    n = len(files or [])
+    extra = ("\n📎 Вложений: %d" % n) if n else ""
+    send("✅ Задача создана: %s\nИсполнитель: %s\nДедлайн: %s%s\n%s"
+         % (title, who, deadline_h or "—", extra, task_link(tid)))
     return tid
 
 def question(name_word, cands, payload, update_id):
@@ -336,27 +387,30 @@ def question(name_word, cands, payload, update_id):
           [[{"text": c["name"] + (" — " + c["pos"] if c["pos"] else ""),
              "callback_data": "u:" + str(c["id"])}] for c in cands[:16]]
           + [[{"text": "✖️ Отмена", "callback_data": "cancel"}]]}
-    body = ("\n\n---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s"
-            % (payload["title"], payload.get("deadline_iso") or "-", payload.get("desc") or "-"))
+    files = payload.get("files") or []
+    body = ("\n\n---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s\nFILES: %s"
+            % (payload["title"], payload.get("deadline_iso") or "-", payload.get("desc") or "-",
+               ",".join(files) if files else "-"))
     send("❓ Кого имел в виду под «%s»? Нажми нужного (или ответь reply с фамилией):%s"
          % (name_word, body), reply_markup=kb)
     confirm(update_id)
 
 def resolve_and_create(p, update_id):
     """p = результат parse_task. Создаёт задачу или задаёт вопрос."""
+    files = p.get("files") or []
+    fline = ",".join(files) if files else "-"
     if p["addressee"] == "self":
-        create_task(p["title"], OWNER, "Мне (Паша Ф.)", p["deadline_iso"], p["deadline_h"], p["desc"])
+        create_task(p["title"], OWNER, "Мне (Паша Ф.)", p["deadline_iso"], p["deadline_h"], p["desc"], files)
         confirm(update_id); return
     if not p["addressee"]:
-        # исполнитель НЕ распознан — НЕ ставим наугад, спрашиваем
         send("❓ Кому поставить задачу «%s»? Ответь на это сообщение (reply) именем исполнителя "
-             "(или напиши «мне»).\n\n---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s"
-             % (p["title"], p["title"], p["deadline_iso"] or "-", p["desc"] or "-"))
+             "(или напиши «мне»).\n\n---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s\nFILES: %s"
+             % (p["title"], p["title"], p["deadline_iso"] or "-", p["desc"] or "-", fline))
         confirm(update_id); return
     pool = apply_hint(candidates(p["addressee"]), p["hint"])
     if len(pool) == 1:
         c = pool[0]
-        create_task(p["title"], c["id"], c["name"], p["deadline_iso"], p["deadline_h"], p["desc"])
+        create_task(p["title"], c["id"], c["name"], p["deadline_iso"], p["deadline_h"], p["desc"], files)
         confirm(update_id)
     elif len(pool) > 1:
         question(p["addressee"], pool, p, update_id)
@@ -366,8 +420,8 @@ def resolve_and_create(p, update_id):
             question(p["addressee"], fz, p, update_id)
         else:
             send("❓ Не нашёл «%s». Ответь на это сообщение (reply) правильным именем/фамилией.\n\n"
-                 "---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s"
-                 % (p["addressee"], p["title"], p["deadline_iso"] or "-", p["desc"] or "-"))
+                 "---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s\nFILES: %s"
+                 % (p["addressee"], p["title"], p["deadline_iso"] or "-", p["desc"] or "-", fline))
             confirm(update_id)
 
 # ------------------------------------------------------------------ callbacks & replies
@@ -405,7 +459,7 @@ def handle_callback(cb):
         try: dl_h = datetime.datetime.fromisoformat(dl).strftime("%d.%m.%Y %H:%M")
         except Exception: dl_h = dl
     desc = pay.get("DESC"); desc = "" if desc in (None, "-", "") else desc
-    create_task(title, uid, who, dl, dl_h, desc)
+    create_task(title, uid, who, dl, dl_h, desc, payload_files(pay))
     confirm(cb["update_id"])
 
 def handle_reply(msg):
@@ -425,12 +479,13 @@ def handle_reply(msg):
             try: dl_h = datetime.datetime.fromisoformat(dl).strftime("%d.%m.%Y %H:%M")
             except Exception: dl_h = dl
         desc = pay.get("DESC"); desc = "" if desc in (None, "-", "") else desc
-        create_task(title, c["id"], c["name"], dl, dl_h, desc)
+        create_task(title, c["id"], c["name"], dl, dl_h, desc, payload_files(pay))
         confirm(msg["update_id"])
     else:
         p = {"addressee": name_word, "hint": None, "title": pay.get("TITLE", "Задача"),
              "deadline_iso": pay.get("DEADLINE") if pay.get("DEADLINE") not in (None,"-","") else None,
-             "deadline_h": "", "desc": pay.get("DESC") if pay.get("DESC") not in (None,"-","") else ""}
+             "deadline_h": "", "desc": pay.get("DESC") if pay.get("DESC") not in (None,"-","") else "",
+             "files": payload_files(pay) or []}
         cands = pool if pool else fuzzy(name_word)
         if cands:
             question(name_word, cands, p, msg["update_id"])
@@ -439,6 +494,54 @@ def handle_reply(msg):
             confirm(msg["update_id"])
 
 # ------------------------------------------------------------------ main loop
+def _do_callback(up):
+    cb = up["callback_query"]; cb["update_id"] = up["update_id"]
+    cb_chat = (cb.get("message", {}) or {}).get("chat", {}).get("id")
+    print("BOT callback update=%s data=%s from=%s chat=%s" %
+          (up["update_id"], cb.get("data"),
+           (cb.get("from") or {}).get("id"), cb_chat), file=sys.stderr)
+    if cb_chat is not None and cb_chat != CHAT_ID:
+        confirm(up["update_id"]); return
+    handle_callback(cb)
+
+def _do_group(g):
+    cid = max(g["ids"])
+    # ответ (reply) на вопрос-уточнение
+    if g["reply_src"]:
+        handle_reply({"reply_to_message": {"text": g["reply_src"]},
+                      "text": g["reply_text"], "update_id": cid})
+        return
+    # загружаем вложения на Диск Битрикса
+    files = []; fail = 0
+    for m in g["msgs"]:
+        fe = extract_file(m)
+        if fe:
+            try:
+                ref = upload_attachment(fe[0], fe[1])
+                if ref: files.append(ref)
+                else: fail += 1
+            except Exception as e:
+                fail += 1
+                print("BOT upload fail", repr(e), file=sys.stderr)
+    print("BOT group ids=%s files=%d fail=%d text=%r" %
+          (g["ids"], len(files), fail, (g["text"] or "")[:60]), file=sys.stderr)
+    text = g["text"]
+    if not text or text.strip().startswith("/"):
+        if files:
+            send("📎 Файлы получил, но без текста задачи не понял, что делать. "
+                 "Пришли одним сообщением: кому и что сделать, к сроку — и приложи файлы.")
+        else:
+            send("Не понял. Напиши: кому и что сделать, к какому сроку.")
+        confirm(cid); return
+    p = parse_task(text)
+    if not p or not p["title"]:
+        send("Не понял. Напиши: кому и что сделать, к какому сроку.")
+        confirm(cid); return
+    p["files"] = files
+    if fail:
+        send("⚠️ Часть файлов (%d) не удалось приложить — проверь размер (Telegram отдаёт боту файлы до 20 МБ)." % fail)
+    resolve_and_create(p, cid)
+
 def main():
     load_users()
     res = http(TG + "getUpdates?timeout=0&allowed_updates=%s"
@@ -447,41 +550,53 @@ def main():
     print("BOT updates=%d types=%s" % (len(ups),
           [ ("cb" if "callback_query" in u else "msg") for u in ups ]), file=sys.stderr)
     ups.sort(key=lambda x: x["update_id"])
+
+    # строим единый список "юнитов" в порядке возрастания id:
+    #   ('cb', up)  — нажатие кнопки;  ('grp', g) — сообщение/альбом (одна задача)
+    units = []; by_mg = {}
     for up in ups:
-        try:
-            if "callback_query" in up:
-                cb = up["callback_query"]; cb["update_id"] = up["update_id"]
-                cb_chat = (cb.get("message", {}) or {}).get("chat", {}).get("id")
-                print("BOT callback update=%s data=%s from=%s chat=%s" %
-                      (up["update_id"], cb.get("data"),
-                       (cb.get("from") or {}).get("id"), cb_chat), file=sys.stderr)
-                if cb_chat is not None and cb_chat != CHAT_ID:
-                    confirm(up["update_id"]); continue
-                handle_callback(cb)
-                continue
-            msg = up.get("message")
-            if not msg or msg.get("chat", {}).get("id") != CHAT_ID:
-                confirm(up["update_id"]); continue
-            msg["update_id"] = up["update_id"]
-            text = msg.get("text") or msg.get("caption") or ""
-            if msg.get("reply_to_message") and "---PAYLOAD---" in (msg["reply_to_message"].get("text") or ""):
-                handle_reply(msg); continue
-            if not text or text.strip().startswith("/"):
-                send("Не понял. Напиши: кому и что сделать, к какому сроку.")
-                confirm(up["update_id"]); continue
-            p = parse_task(text)
-            if not p or not p["title"]:
-                send("Не понял. Напиши: кому и что сделать, к какому сроку.")
-                confirm(up["update_id"]); continue
-            resolve_and_create(p, up["update_id"])
-        except Exception as e:
+        if "callback_query" in up:
+            units.append(("cb", up)); continue
+        msg = up.get("message")
+        if not msg or msg.get("chat", {}).get("id") != CHAT_ID:
+            confirm(up["update_id"]); continue
+        mg = msg.get("media_group_id")
+        if mg and mg in by_mg:
+            g = by_mg[mg]
+        else:
+            g = {"ids": [], "text": "", "msgs": [], "reply_src": None, "reply_text": ""}
+            units.append(("grp", g))
+            if mg: by_mg[mg] = g
+        g["ids"].append(up["update_id"]); g["msgs"].append(msg)
+        cap = msg.get("text") or msg.get("caption")
+        if cap and not g["text"]: g["text"] = cap
+        rt = msg.get("reply_to_message")
+        if rt and "---PAYLOAD---" in (rt.get("text") or "") and not g["reply_src"]:
+            g["reply_src"] = rt.get("text"); g["reply_text"] = cap or ""
+
+    # обрабатываем по порядку; каждый юнит сам себя подтверждает
+    for kind, obj in units:
+        if kind == "cb":
+            cidref = obj["update_id"]
             try:
-                send("⚠️ Не смог обработать: «%s». Поставь вручную или повтори."
-                     % (str((up.get("message", {}) or {}).get("text", ""))[:80]))
-                confirm(up["update_id"])
-            except Exception:
-                # даже ошибку не отправили — НЕ подтверждаем, сообщение останется
-                print("FATAL for update", up["update_id"], repr(e), file=sys.stderr)
+                _do_callback(obj)
+            except Exception as e:
+                try:
+                    send("⚠️ Не смог обработать нажатие. Повтори выбор.")
+                    confirm(cidref)
+                except Exception:
+                    print("FATAL cb", cidref, repr(e), file=sys.stderr)
+        else:
+            cid = max(obj["ids"])
+            try:
+                _do_group(obj)
+            except Exception as e:
+                try:
+                    send("⚠️ Не смог обработать: «%s». Поставь вручную или повтори."
+                         % (str(obj.get("text", ""))[:80]))
+                    confirm(cid)
+                except Exception:
+                    print("FATAL group", obj["ids"], repr(e), file=sys.stderr)
 
 if __name__ == "__main__":
     main()
