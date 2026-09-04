@@ -529,6 +529,8 @@ def _do_group(g):
         return
     # загружаем вложения на Диск Битрикса
     files = []; fail = 0
+    # «сжатое фото» = картинка, присланная как photo (Telegram ужимает), а не как файл-документ
+    compressed = any(m.get("photo") and not m.get("document") for m in g["msgs"])
     print("BOT msgkeys=%s" % [sorted(k for k in m.keys()) for m in g["msgs"]], file=sys.stderr)
     for m in g["msgs"]:
         fe = extract_file(m)
@@ -559,6 +561,9 @@ def _do_group(g):
     if fail:
         send("⚠️ Часть файлов (%d) не удалось приложить — проверь размер (Telegram отдаёт боту файлы до 20 МБ)." % fail)
     resolve_and_create(p, cid)
+    if compressed and files:
+        send("ℹ️ Картинка пришла сжатой — Telegram ужимает фото. Для полного качества отправляй "
+             "скриншоты как файл: скрепка → «Отправить как файл» (или сними галочку «Сжать изображение»).")
 
 def main():
     load_users()
