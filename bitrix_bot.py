@@ -308,11 +308,27 @@ def parse_task(text):
 
 # ------------------------------------------------------------------ actions
 def dedup(title, resp):
+    """Защита от повторной обработки: считаем дублем ТОЛЬКО задачу с ТОЧНО таким же
+    названием, тем же исполнителем и созданную недавно (<= 20 мин). Иначе создаём новую."""
     try:
-        res = bx("tasks.task.list", {"filter": {"%TITLE": title, "RESPONSIBLE_ID": resp},
-                                     "order": {"ID": "DESC"}, "select": ["ID", "CREATED_DATE"]})
-        for t in res.get("result", {}).get("tasks", []):
-            return t["id"]
+        res = bx("tasks.task.list", {"filter": {"=TITLE": title, "RESPONSIBLE_ID": resp},
+                                     "order": {"ID": "DESC"}, "select": ["ID", "CREATED_DATE", "TITLE"]})
+        tasks = res.get("result", {}).get("tasks", [])
+        for t in tasks:
+            # доп. страховка: точное совпадение названия
+            if (t.get("title") or t.get("TITLE") or "").strip() != title.strip():
+                continue
+            cd = t.get("createdDate") or t.get("CREATED_DATE")
+            if not cd:
+                return None
+            try:
+                dt = datetime.datetime.fromisoformat(cd.replace("Z", "+00:00"))
+                age = (datetime.datetime.now(dt.tzinfo) - dt).total_seconds()
+                if age <= 1200:
+                    return t["id"]
+            except Exception:
+                return None
+            return None
     except Exception:
         pass
     return None
@@ -513,9 +529,11 @@ def _do_group(g):
         return
     # загружаем вложения на Диск Битрикса
     files = []; fail = 0
+    print("BOT msgkeys=%s" % [sorted(k for k in m.keys()) for m in g["msgs"]], file=sys.stderr)
     for m in g["msgs"]:
         fe = extract_file(m)
         if fe:
+            print("BOT extracted file name=%s from keys=%s" % (fe[1], sorted(m.keys())), file=sys.stderr)
             try:
                 ref = upload_attachment(fe[0], fe[1])
                 if ref: files.append(ref)
