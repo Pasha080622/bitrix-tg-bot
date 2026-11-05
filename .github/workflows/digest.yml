@@ -1,0 +1,35 @@
+name: Bitrix PF Daily Digest
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Preview counts or send digest to the existing owner chat
+        type: choice
+        required: true
+        default: preview
+        options:
+          - preview
+          - send
+permissions:
+  contents: read
+concurrency:
+  group: bitrix-pf-digest
+  cancel-in-progress: false
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build or send PF digest
+        env:
+          BITRIX_WEBHOOK: ${{ secrets.BITRIX_WEBHOOK }}
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          DIGEST_MODE: ${{ inputs.mode }}
+        run: |
+          if [ "$DIGEST_MODE" = "send" ]; then
+            python3 daily_digest.py --send
+          else
+            python3 daily_digest.py
+          fi
