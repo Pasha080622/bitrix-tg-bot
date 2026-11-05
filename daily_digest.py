@@ -67,7 +67,7 @@ def task_line(task, now, overdue):
 
 
 def build_messages(tasks, now):
-    active = [t for t in tasks if str(field(t, 'status')) not in ('5', '7')]
+    active = [t for t in tasks if str(field(t, 'status')) in ('2', '3', '6')]
     late, soon, other = [], [], []
     tomorrow = now.date() + dt.timedelta(days=1)
     for task in active:
@@ -117,7 +117,7 @@ def collect(webhook):
             raise RuntimeError('Repeated pagination offset')
         seen.add(start)
         response = bx('tasks.task.list', {
-            'filter': {'STAGES_ID': stage_id, '!REAL_STATUS': [5, 7]},
+            'filter': {'STAGES_ID': stage_id, 'REAL_STATUS': [2, 3, 6]},
             'select': ['ID', 'TITLE', 'DEADLINE', 'CREATED_BY', 'STATUS'],
             'order': {'ID': 'ASC'}, 'start': start,
         })
