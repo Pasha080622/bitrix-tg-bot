@@ -136,6 +136,7 @@ def main():
     parser.add_argument('--send', action='store_true')
     args = parser.parse_args()
     stage_id, tasks = collect(os.environ['BITRIX_WEBHOOK'])
+    print('DIGEST status_counts=' + json.dumps({s: sum(str(field(t, 'status')) == s for t in tasks) for s in sorted({str(field(t, 'status')) for t in tasks})}))
     messages, counts = build_messages(tasks, dt.datetime.now(MSK))
     # Logs contain counts and IDs for verification, never task titles, tokens or messages.
     print(json.dumps({'stage_id': stage_id, 'counts': counts,
