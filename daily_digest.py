@@ -117,7 +117,7 @@ def collect(webhook):
             raise RuntimeError('Repeated pagination offset')
         seen.add(start)
         response = bx('tasks.task.list', {
-            'filter': {'STAGE_ID': stage_id, '!REAL_STATUS': [5, 7]},
+            'filter': {'STAGES_ID': stage_id, '!REAL_STATUS': [5, 7]},
             'select': ['ID', 'TITLE', 'DEADLINE', 'CREATED_BY', 'STATUS'],
             'order': {'ID': 'ASC'}, 'start': start,
         })
