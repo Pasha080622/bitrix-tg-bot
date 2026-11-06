@@ -143,27 +143,41 @@ def nominatives(word):
             cands.add(w[:-1] + "я")
     return list(cands)
 
-def candidates(name_word):
-    names = [n.lower() for n in nominatives(name_word)]
-    match = lambda p: p["first"].lower() in names
-    pool = [p for p in _USERS["team"] if match(p)]
-    if not pool:
-        pool = [p for p in _USERS["all"] if match(p)]
-    return pool
+def _person_text(value):
+    """Нормализация имени, инициала и подписи должности."""
+    return re.sub(r"[^\w]+", " ", (value or "").casefold().replace("ё", "е")).strip()
 
 def apply_hint(pool, hint):
     if not hint:
         return pool
-    h = hint.lower().strip(" ()")
-    sub = [p for p in pool if p["last"].lower().startswith(h)
-           or h in p["pos"].lower() or h in p["name"].lower()]
-    return sub or pool
+    h = _person_text(hint)
+    if not h:
+        return pool
+    # Один инициал относится к фамилии, а не к буквам внутри имени/должности.
+    if len(h) == 1:
+        return [p for p in pool if _person_text(p["last"]).startswith(h)]
+    return [p for p in pool if _person_text(p["last"]).startswith(h)
+            or h in _person_text(p["pos"]) or h in _person_text(p["name"])]
 
-def fuzzy(word):
-    q = word.lower(); p3 = q[:3]
-    return [p for p in _USERS["all"]
-            if p["first"].lower().startswith(p3) or q in p["name"].lower()
-            or q in p["pos"].lower()][:16]
+def _prefer_team(pool):
+    team_ids = {str(p["id"]) for p in _USERS["team"]}
+    team = [p for p in pool if str(p["id"]) in team_ids]
+    return team or pool
+
+def candidates(name_word, hint=None):
+    names = {_person_text(n) for n in nominatives(name_word)}
+    pool = [p for p in _USERS["all"] if _person_text(p["first"]) in names]
+    # Сначала учитываем фамилию/инициал, затем приоритет отдела.
+    return _prefer_team(apply_hint(pool, hint))
+
+def fuzzy(word, hint=None):
+    q = _person_text(word); p3 = q[:3]
+    if not q:
+        return []
+    pool = [p for p in _USERS["all"]
+            if _person_text(p["first"]).startswith(p3) or q in _person_text(p["name"])
+            or q in _person_text(p["pos"])]
+    return _prefer_team(apply_hint(pool, hint))[:16]
 
 # ------------------------------------------------------------------ dates
 def now():
@@ -423,7 +437,7 @@ def resolve_and_create(p, update_id):
              "(или напиши «мне»).\n\n---PAYLOAD---\nTITLE: %s\nDEADLINE: %s\nDESC: %s\nFILES: %s"
              % (p["title"], p["title"], p["deadline_iso"] or "-", p["desc"] or "-", fline))
         confirm(update_id); return
-    pool = apply_hint(candidates(p["addressee"]), p["hint"])
+    pool = candidates(p["addressee"], p["hint"])
     if len(pool) == 1:
         c = pool[0]
         create_task(p["title"], c["id"], c["name"], p["deadline_iso"], p["deadline_h"], p["desc"], files)
@@ -431,7 +445,7 @@ def resolve_and_create(p, update_id):
     elif len(pool) > 1:
         question(p["addressee"], pool, p, update_id)
     else:
-        fz = fuzzy(p["addressee"])
+        fz = fuzzy(p["addressee"], p["hint"])
         if fz:
             question(p["addressee"], fz, p, update_id)
         else:
@@ -483,9 +497,8 @@ def handle_reply(msg):
     src = msg["reply_to_message"]["text"]
     pay = parse_payload(src) or {}
     name_word = msg.get("text", "").split()[0] if msg.get("text") else ""
-    pool = apply_hint(candidates(name_word), None)
-    # уточнение фамилией/должностью из полного текста ответа
-    pool = apply_hint(pool, " ".join(msg.get("text", "").split()[1:]) or None)
+    hint = " ".join(msg.get("text", "").split()[1:]) or None
+    pool = candidates(name_word, hint)
     if len(pool) == 1:
         c = pool[0]
         title = pay.get("TITLE", "Задача")
@@ -498,11 +511,11 @@ def handle_reply(msg):
         create_task(title, c["id"], c["name"], dl, dl_h, desc, payload_files(pay))
         confirm(msg["update_id"])
     else:
-        p = {"addressee": name_word, "hint": None, "title": pay.get("TITLE", "Задача"),
+        p = {"addressee": name_word, "hint": hint, "title": pay.get("TITLE", "Задача"),
              "deadline_iso": pay.get("DEADLINE") if pay.get("DEADLINE") not in (None,"-","") else None,
              "deadline_h": "", "desc": pay.get("DESC") if pay.get("DESC") not in (None,"-","") else "",
              "files": payload_files(pay) or []}
-        cands = pool if pool else fuzzy(name_word)
+        cands = pool if pool else fuzzy(name_word, hint)
         if cands:
             question(name_word, cands, p, msg["update_id"])
         else:
